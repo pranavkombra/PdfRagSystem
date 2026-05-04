@@ -1,16 +1,20 @@
-# importing dependencies
-from dotenv import load_dotenv
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import faiss
-from langchain.prompts import PromptTemplate
+import os
+from dotenv import load_dotenv
+from pypdf import PdfReader
+from htmltemplates import css, bot_template, user_template
+from langchain_text_splitters import CharacterTextSplitter
+
+# --- MODERNIZED IMPORTS ---
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_groq import ChatGroq  # Switched from OpenAI to Groq
+from langchain_core.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from langchain.chat_models import ChatOpenAI
-from htmlTemplates import css, bot_template, user_template
 
+# Load the keys from your .env file
+load_dotenv()
 # creating custom template to guide llm model
 custom_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
 Chat History:
@@ -42,15 +46,22 @@ def get_chunks(raw_text):
 def get_vectorstore(chunks):
     embeddings=HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2",
                                      model_kwargs={'device':'cpu'})
-    vectorstore=faiss.FAISS.from_texts(texts=chunks,embedding=embeddings)
+    # --- MODERNIZED FAISS CALL ---
+    vectorstore=FAISS.from_texts(texts=chunks,embedding=embeddings)
     return vectorstore
 
 # generating conversation chain  
 def get_conversationchain(vectorstore):
-    llm=ChatOpenAI(temperature=0.2)
+    # Replace the old llm = ChatOpenAI(...) line with this:
+    llm = ChatGroq(
+        groq_api_key=os.getenv("GROQ_API_KEY"), 
+        model_name="llama-3.1-8b-instant",
+        temperature=0
+)
     memory = ConversationBufferMemory(memory_key='chat_history', 
                                       return_messages=True,
                                       output_key='answer') # using conversation buffer memory to hold past information
+    
     conversation_chain = ConversationalRetrievalChain.from_llm(
                                 llm=llm,
                                 retriever=vectorstore.as_retriever(),
@@ -59,48 +70,55 @@ def get_conversationchain(vectorstore):
     return conversation_chain
 
 # generating response from user queries and displaying them accordingly
+# generating response from user queries and displaying them accordingly
 def handle_question(question):
-    response=st.session_state.conversation({'question': question})
-    st.session_state.chat_history=response["chat_history"]
-    for i,msg in enumerate(st.session_state.chat_history):
-        if i%2==0:
-            st.write(user_template.replace("{{MSG}}",msg.content,),unsafe_allow_html=True)
-        else:
-            st.write(bot_template.replace("{{MSG}}",msg.content),unsafe_allow_html=True)
-
+    # This 'if' check prevents the NoneType error from your screenshot
+    if st.session_state.conversation is not None:
+        response = st.session_state.conversation({'question': question})
+        st.session_state.chat_history = response["chat_history"]
+        
+        for i, msg in enumerate(st.session_state.chat_history):
+            if i % 2 == 0:
+                st.write(user_template.replace("{{MSG}}", msg.content), unsafe_allow_html=True)
+            else:
+                st.write(bot_template.replace("{{MSG}}", msg.content), unsafe_allow_html=True)
+    else:
+        # User-friendly warning instead of a red error box
+        st.info("Please upload your PDF documents and click 'Process' in the sidebar to start chatting.")
 
 def main():
     load_dotenv()
-    st.set_page_config(page_title="Chat with multiple PDFs",page_icon=":books:")
-    st.write(css,unsafe_allow_html=True)
+    st.set_page_config(page_title="Chat with multiple PDFs", page_icon=":books:")
+    st.write(css, unsafe_allow_html=True)
+    
     if "conversation" not in st.session_state:
-        st.session_state.conversation=None
+        st.session_state.conversation = None
 
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history=None
+        st.session_state.chat_history = None
     
     st.header("Chat with multiple PDFs :books:")
-    question=st.text_input("Ask question from your document:")
+    question = st.text_input("Ask question from your document:")
     if question:
         handle_question(question)
+        
     with st.sidebar:
         st.subheader("Your documents")
-        docs=st.file_uploader("Upload your PDF here and click on 'Process'",accept_multiple_files=True)
+        docs = st.file_uploader("Upload your PDF here and click on 'Process'", accept_multiple_files=True)
         if st.button("Process"):
             with st.spinner("Processing"):
+                # 1. extract text
+                raw_text = get_pdf_text(docs)
                 
-                #get the pdf
-                raw_text=get_pdf_text(docs)
+                # 2. get the text chunks
+                text_chunks = get_chunks(raw_text)
                 
-                #get the text chunks
-                text_chunks=get_chunks(raw_text)
+                # 3. create vectorstore
+                vectorstore = get_vectorstore(text_chunks)
                 
-                #create vectorstore
-                vectorstore=get_vectorstore(text_chunks)
-                
-                #create conversation chain
-                st.session_state.conversation=get_conversationchain(vectorstore)
-
+                # 4. create conversation chain
+                st.session_state.conversation = get_conversationchain(vectorstore)
+                st.success("Done! You can now ask questions.")
 
 if __name__ == '__main__':
     main()
